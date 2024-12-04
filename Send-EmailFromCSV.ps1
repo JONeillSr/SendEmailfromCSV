@@ -94,6 +94,7 @@ param(
 .PARAMETER TemplateFilePath
     The path to the HTML template file for email content.
     Default: ".\email-template.html"
+    Template should contain title tags for subject and use {{variableName}} for substitutions.
 
 .PARAMETER EmailSubjectOverride
     Optional subject line that overrides the subject in the template file.
@@ -156,7 +157,7 @@ if (-not $EmailDomain) {
 }
 
 # Function to process email templates
-function Process-EmailTemplate {
+function Convert-EmailTemplate {
     param (
         [string]$templateContent,
         [hashtable]$replacements
@@ -358,20 +359,42 @@ function Show-EmailApprovalForm {
     }
 }
 
-# Check if template file exists
+# Check if the CSV file exists and load it first
+if (-Not (Test-Path -Path $CsvFilePath)) {
+    Write-Error "The CSV file '$CsvFilePath' does not exist. Please provide a valid file path."
+    exit
+}
+
+try {
+    # Import the CSV file
+    $users = Import-Csv -Path $CsvFilePath
+} catch {
+    Write-Error "Failed to read the CSV file. Error: $_"
+    exit
+}
+
+# Now check and load the template file
 if (-Not (Test-Path -Path $TemplateFilePath)) {
     Write-Error "The template file '$TemplateFilePath' does not exist. Please provide a valid template file."
     exit
 }
 
-# Read the template file
+# Read and process the template
 try {
     $templateContent = Get-Content -Path $TemplateFilePath -Raw
     
-    # Extract subject from template if not overridden
+    # Extract and process subject from template if not overridden
     if (-not $EmailSubjectOverride) {
         if ($templateContent -match '<title>(.*?)</title>') {
-            $emailSubject = $matches[1]
+            # Process the subject line for any variables
+            $subjectTemplate = $matches[1]
+            $emailSubject = $subjectTemplate
+            # Replace any variables in the subject using the first user's data
+            if ($users.Count -gt 0) {
+                $users[0].PSObject.Properties | ForEach-Object {
+                    $emailSubject = $emailSubject -replace "{{$($_.Name)}}", $_.Value
+                }
+            }
         } else {
             $emailSubject = "New Information from IT Department"  # Default subject
         }
@@ -379,104 +402,93 @@ try {
         $emailSubject = $EmailSubjectOverride
     }
 } catch {
-    Write-Error "Failed to read the template file. Error: $_"
+    Write-Error "Failed to read or process the template file. Error: $_"
     exit
 }
 
 # Set the from email address
 $fromEmail = $SmtpUser
 
-# Check if the CSV file exists
-if (-Not (Test-Path -Path $CsvFilePath)) {
-    Write-Error "The CSV file '$CsvFilePath' does not exist. Please provide a valid file path."
-    exit
-}
+# Initialize counters
+$totalEmails = $users.Count
+$sentEmails = 0
+$rejectedEmails = 0
 
-try {
-        # Import the CSV file
-        $users = Import-Csv -Path $CsvFilePath
+# Iterate over each user in the CSV file
+foreach ($user in $users) {
+    try {
+        # Construct the email address using SAMAccountName and domain parameter
+        $toEmail = "$($user.SamAccountName)@$EmailDomain"
+        
+        # Create replacements hashtable for template processing
+        $replacements = @{}
+
+        # Add all CSV properties to the replacements
+        $user.PSObject.Properties | ForEach-Object {
+            $replacements[$_.Name] = $_.Value
+        }
+        # Add current date
+        $replacements['SendDate'] = (Get-Date).ToString('dddd, MMMM d, yyyy')
+        
+        # Process the template with the replacements
+        $emailBody = Convert-EmailTemplate -templateContent $templateContent -replacements $replacements
+
+        # Show approval form and get result
+        $priority = if ($HighPriority) { "High" } else { "Normal" }
+        $approvalResult = Show-EmailApprovalForm -ToEmail $toEmail -Subject $emailSubject -Body $emailBody `
+            -Priority $priority -HasReadReceipt $RequestReadReceipt -HasDeliveryReceipt $RequestDeliveryReceipt
+
+        if ($approvalResult.Result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            # Create the email message using the potentially modified email address
+            $message = New-Object System.Net.Mail.MailMessage
+            $message.From = $fromEmail
+            $message.To.Add($approvalResult.EmailAddress)
+            $message.Subject = $emailSubject
+            $message.Body = $emailBody
+            $message.IsBodyHtml = $true
+
+            # Set read receipt if requested
+            if ($RequestReadReceipt) {
+                $message.Headers.Add("Disposition-Notification-To", $fromEmail)
+            }
+
+            # Set delivery receipt if requested
+            if ($RequestDeliveryReceipt) {
+                $message.DeliveryNotificationOptions = [System.Net.Mail.DeliveryNotificationOptions]::OnSuccess
+            }
+
+            # Set priority if requested
+            if ($HighPriority) {
+                $message.Priority = [System.Net.Mail.MailPriority]::High
+            }
+
+            # Configure SMTP client
+            $smtpClient = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
+            $smtpClient.EnableSsl = $true
+            # Convert SecureString to NetworkCredential
+            $smtpClient.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $SmtpPassword)
+
+            # Send the email
+            $smtpClient.Send($message)
+            $sentEmails++
+            Write-Host "Email approved and sent to $($approvalResult.EmailAddress)"
+        }
+        else {
+            $rejectedEmails++
+            Write-Host "Email to $toEmail was rejected by user"
+        }
+
     } catch {
-        Write-Error "Failed to read the CSV file. Error: $_"
-        exit
-    }
-    
-    # Initialize counters
-    $totalEmails = $users.Count
-    $sentEmails = 0
-    $rejectedEmails = 0
-    
-    # Iterate over each user in the CSV file
-    foreach ($user in $users) {
-        try {
-            # Construct the email address using SAMAccountName and domain parameter
-            $toEmail = "$($user.SamAccountName)@$EmailDomain"
-            
-            # Create replacements hashtable for template processing
-            $replacements = @{}
-            # Add all CSV properties to the replacements
-            $user.PSObject.Properties | ForEach-Object {
-                $replacements[$_.Name] = $_.Value
-            }
-            
-            # Process the template with the replacements
-            $emailBody = Process-EmailTemplate -templateContent $templateContent -replacements $replacements
-    
-            # Show approval form and get result
-            $priority = if ($HighPriority) { "High" } else { "Normal" }
-            $approvalResult = Show-EmailApprovalForm -ToEmail $toEmail -Subject $emailSubject -Body $emailBody `
-                -Priority $priority -HasReadReceipt $RequestReadReceipt -HasDeliveryReceipt $RequestDeliveryReceipt
-    
-            if ($approvalResult.Result -eq [System.Windows.Forms.DialogResult]::Yes) {
-                # Create the email message using the potentially modified email address
-                $message = New-Object System.Net.Mail.MailMessage
-                $message.From = $fromEmail
-                $message.To.Add($approvalResult.EmailAddress)
-                $message.Subject = $emailSubject
-                $message.Body = $emailBody
-                $message.IsBodyHtml = $true
-    
-                # Set read receipt if requested
-                if ($RequestReadReceipt) {
-                    $message.Headers.Add("Disposition-Notification-To", $fromEmail)
-                }
-    
-                # Set delivery receipt if requested
-                if ($RequestDeliveryReceipt) {
-                    $message.DeliveryNotificationOptions = [System.Net.Mail.DeliveryNotificationOptions]::OnSuccess
-                }
-    
-                # Set priority if requested
-                if ($HighPriority) {
-                    $message.Priority = [System.Net.Mail.MailPriority]::High
-                }
-    
-                # Configure SMTP client
-                $smtpClient = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
-                $smtpClient.EnableSsl = $true
-                # Convert SecureString to NetworkCredential
-                $smtpClient.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $SmtpPassword)
-    
-                # Send the email
-                $smtpClient.Send($message)
-                $sentEmails++
-                Write-Host "Email approved and sent to $($approvalResult.EmailAddress)"
-            }
-            else {
-                $rejectedEmails++
-                Write-Host "Email to $toEmail was rejected by user"
-            }
-    
-        } catch {
-            Write-Error "Failed to process email for $toEmail. Error: $_"
-        } finally {
-            if ($null -ne $message) {
-                $message.Dispose()
-            }
+        Write-Error "Failed to process email for $toEmail. Error: $_"
+    } finally {
+        if ($null -ne $message) {
+            $message.Dispose()
         }
     }
-    
-    # Display summary
-    Write-Host "`nEmail Processing Summary:"
-    Write-Host "Total emails processed: $totalEmails"
-    Write-Host "Emails sent: $sentEmails"
-    Write-Host "Emails rejected: $rejectedEmails"
+}
+
+# Display summary
+Write-Host "`nEmail Processing Summary:"
+Write-Host "Total emails processed: $totalEmails"
+Write-Host "Emails sent: $sentEmails"
+Write-Host "Emails rejected: $rejectedEmails"

@@ -1,14 +1,31 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{{subject}}</title>
-    <meta name="template-info" content="Email Template Variables: {{userPrincipalName}}, {{temporaryPassword}}">
+    <title>New login for {{UserPrincipalName}}</title>
+    <meta name="description" content="Template for Sage X3 login information">
 </head>
-<body>
-    <p>Hello!</p>
-    <p>Upcoming enhancements will improve security and ease of use logging into National Manufacturing Group's Sage X3 business system. While these changes aren't quite ready, your username and temporary password are already created. Your full username is <b>{{userPrincipalName}}</b> and your temporary password is <b>{{temporaryPassword}}</b></p>
+<body style="font-family: Arial, sans-serif; line-height: 1.6;">
+    <p>Hello {{DisplayName}},</p>
+
+    <p>Upcoming enhancements will improve security and ease of use logging into National Manufacturing Group's Sage X3 business system. While these changes aren't quite ready, your username and temporary password are already created.</p>
+
+    <div style="background-color: #f5f5f5; padding: 15px; margin: 20px 0; border-left: 4px solid #007bff;">
+        <p><strong>Your login information:</strong><br>
+        Username: <strong>{{UserPrincipalName}}</strong><br>
+        Temporary Password: <strong>{{TemporaryPassword}}</strong></p>
+    </div>
+
     <p>Please keep this information handy. We'll send another email in the near future, once the changes are ready with instructions on how to use these new credentials.</p>
-    <p>Thank you!</p>
-    <p>John O'Neill Sr.<br>National Manufacturing Group</p>
+
+    <p>If you have any questions, please feel free to contact the IT Help Desk.</p>
+
+    <p>Thank you!<br>
+    {{SenderName}}<br>
+    National Manufacturing Group</p>
+
+    <hr>
+    <p style="font-size: 0.8em; color: #666;">
+        This email was sent on {{SendDate}} to {{UserPrincipalName}}
+    </p>
 </body>
 </html>
