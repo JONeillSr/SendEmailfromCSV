@@ -10,6 +10,7 @@ A PowerShell script that automates sending emails to users with information from
 - Support for delivery receipts and read receipts
 - Customizable email priority settings
 - Flexible domain configuration for email addresses
+- HTML template support with variable substitution
 - Dynamic subject lines from templates
 - Automatic current date insertion in templates
 
