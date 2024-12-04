@@ -29,6 +29,14 @@ param(
     [string]$CredentialPath,
 
     [Parameter(Mandatory=$false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$TemplateFilePath,
+
+    [Parameter(Mandatory=$false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$EmailSubjectOverride,
+
+    [Parameter(Mandatory=$false)]
     [switch]$StoreCredential,
 
     [Parameter(Mandatory=$false)]
@@ -43,18 +51,17 @@ param(
 
 <#
 .SYNOPSIS
-    Sends an email to users with new logon information for Sage X3 based on a CSV file,
-    with interactive approval and email address editing capabilities.
+    Sends emails based on CSV data using customizable HTML templates.
 
 .DESCRIPTION
-    This script reads user details from a CSV file and displays each email in a Windows Form
-    for approval before sending. The user can edit the destination email address and must
-    approve or reject each email individually. Includes support for delivery receipts,
-    read receipts, and priority settings.
+    This script reads user details from a CSV file and sends emails using a customizable
+    HTML template. It displays each email in a Windows Form for approval before sending.
+    The user can edit the destination email address and must approve or reject each email
+    individually. Includes support for delivery receipts, read receipts, and priority settings.
 
-    The script provides secure credential handling, allowing you to store and reuse SMTP
-    credentials securely. It includes interactive email address editing and validation
-    before sending each email.
+    The script provides secure credential handling and supports template-based emails with
+    variable substitution. Templates can be customized using HTML with {{variableName}}
+    placeholders for dynamic content.
 
 .PARAMETER CsvFilePath
     The file path of the CSV containing user details.
@@ -78,11 +85,18 @@ param(
 
 .PARAMETER EmailDomain
     The domain to append to SAMAccountNames when constructing email addresses.
-    Default: "nationalmanufacturing.group"
+    Default: Prompted if not provided
 
 .PARAMETER CredentialPath
     The file path where credentials are stored/loaded.
     Default: ".\email_creds.xml"
+
+.PARAMETER TemplateFilePath
+    The path to the HTML template file for email content.
+    Default: ".\email-template.html"
+
+.PARAMETER EmailSubjectOverride
+    Optional subject line that overrides the subject in the template file.
 
 .PARAMETER StoreCredential
     Switch to save credentials for future use. When this switch is used,
@@ -102,35 +116,27 @@ param(
     Prompts for credentials and stores them securely for future use.
 
 .EXAMPLE
-    .\Send-EmailFromCSV.ps1
-    Runs the script using stored credentials if available, otherwise prompts for credentials.
-.EXAMPLE
-    .\Send-EmailFromCSV.ps1 -CredentialPath "C:\MyCredentials\email_creds.xml"
-    Use a custom credential file.
+    .\Send-EmailFromCSV.ps1 -TemplateFilePath "C:\Templates\welcome.html"
+    Runs the script using the specified email template file.
 
 .EXAMPLE
-    .\Send-EmailFromCSV.ps1 -SmtpUser "different.user@domain.com"
-    Override stored username but use stored password:
+    .\Send-EmailFromCSV.ps1 -TemplateFilePath "C:\Templates\notice.html" -EmailSubjectOverride "Important Notice"
+    Uses a template but overrides its subject line.
 
 .EXAMPLE
     .\Send-EmailFromCSV.ps1 -CsvFilePath "C:\Users.csv" -EmailDomain "different.domain" -RequestReadReceipt -HighPriority
-    Runs the script using stored credentials, with a custom CSV file and email domain, requesting read receipts and setting high priority.
-
-.EXAMPLE
-    $cred = Get-Credential
-    .\Send-EmailFromCSV.ps1 -SmtpUser $cred.UserName -SmtpPassword $cred.Password
-    Runs the script with manually provided credentials for this run only.
+    Runs the script with a custom CSV file and email domain, requesting read receipts and setting high priority.
 
 .NOTES
     Author: John A. O'Neill Sr.
     Date: 12/01/2024
-    Version: 1.5
-    Change Date: 12/03/2024
-    Change Purpose: Added secure credential handling, email domain parameter, and enhanced email validation
+    Version: 2.0
+    Change Date: 12/04/2024
+    Change Purpose: Added template-based email support, allowing for customizable email content
     Prerequisite: PowerShell Version 5.1 or later
 
 .LINK
-    For more information about secure credential handling in PowerShell:
+    For more information about email templates and secure credential handling:
     https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-credential
 #>
 
@@ -143,9 +149,25 @@ if (-not $CsvFilePath) { $CsvFilePath = "$PSScriptRoot\TempPasswords.csv" }
 if (-not $SmtpServer) { $SmtpServer = "smtp.office365.com" }
 if (-not $SmtpPort) { $SmtpPort = 587 }
 if (-not $CredentialPath) { $CredentialPath = "$PSScriptRoot\email_creds.xml" }
+if (-not $TemplateFilePath) { $TemplateFilePath = "$PSScriptRoot\email-template.html" }
 
 if (-not $EmailDomain) {
     $EmailDomain = Read-Host -Prompt "Enter domain name to use when generating recipient address"
+}
+
+# Function to process email templates
+function Process-EmailTemplate {
+    param (
+        [string]$templateContent,
+        [hashtable]$replacements
+    )
+    
+    $processedContent = $templateContent
+    foreach ($key in $replacements.Keys) {
+        $processedContent = $processedContent -replace "{{$key}}", $replacements[$key]
+    }
+    
+    return $processedContent
 }
 
 # Credential handling
@@ -156,6 +178,7 @@ if ($StoreCredential) {
     Write-Host "Credentials stored successfully at: $CredentialPath"
     exit
 }
+
 # Handle credentials
 if (-not $SmtpPassword) {
     if (Test-Path $CredentialPath) {
@@ -193,7 +216,6 @@ if (-not $SmtpUser) {
     Write-Error "SMTP Username is required."
     exit
 }
-
 
 function Show-EmailApprovalForm {
     param (
@@ -336,9 +358,33 @@ function Show-EmailApprovalForm {
     }
 }
 
+# Check if template file exists
+if (-Not (Test-Path -Path $TemplateFilePath)) {
+    Write-Error "The template file '$TemplateFilePath' does not exist. Please provide a valid template file."
+    exit
+}
+
+# Read the template file
+try {
+    $templateContent = Get-Content -Path $TemplateFilePath -Raw
+    
+    # Extract subject from template if not overridden
+    if (-not $EmailSubjectOverride) {
+        if ($templateContent -match '<title>(.*?)</title>') {
+            $emailSubject = $matches[1]
+        } else {
+            $emailSubject = "New Information from IT Department"  # Default subject
+        }
+    } else {
+        $emailSubject = $EmailSubjectOverride
+    }
+} catch {
+    Write-Error "Failed to read the template file. Error: $_"
+    exit
+}
+
 # Set the from email address
 $fromEmail = $SmtpUser
-$emailSubject = "Your new logon information for the upcoming changes to our Sage X3 system."
 
 # Check if the CSV file exists
 if (-Not (Test-Path -Path $CsvFilePath)) {
@@ -347,96 +393,90 @@ if (-Not (Test-Path -Path $CsvFilePath)) {
 }
 
 try {
-    # Import the CSV file
-    $users = Import-Csv -Path $CsvFilePath
-} catch {
-    Write-Error "Failed to read the CSV file. Error: $_"
-    exit
-}
-
-# Initialize counters
-$totalEmails = $users.Count
-$sentEmails = 0
-$rejectedEmails = 0
-
-# Iterate over each user in the CSV file
-foreach ($user in $users) {
-    try {
-        # Construct the email address using SAMAccountName and domain parameter
-        $toEmail = "$($user.SamAccountName)@$EmailDomain"
-        $userPrincipalName = $user.UserPrincipalName
-        $temporaryPassword = $user.TemporaryPassword
-
-        # Compose the email body in HTML format
-        $emailBody = @"
-<html>
-<body>
-    <p>Hello!</p>
-    <p>Upcoming enhancements will improve security and ease of use logging into National Manufacturing Group's Sage X3 business system. While these changes aren't quite ready, your username and temporary password are already created. Your full username is <b>$userPrincipalName</b> and your temporary password is <b>$temporaryPassword</b></p>
-    <p>Please keep this information handy. We'll send another email in the near future, once the changes are ready with instructions on how to use these new credentials.</p>
-    <p>Thank you!</p>
-    <p>John O'Neill Sr.<br>National Manufacturing Group</p>
-</body>
-</html>
-"@
-
-        # Show approval form and get result
-        $priority = if ($HighPriority) { "High" } else { "Normal" }
-        $approvalResult = Show-EmailApprovalForm -ToEmail $toEmail -Subject $emailSubject -Body $emailBody `
-            -Priority $priority -HasReadReceipt $RequestReadReceipt -HasDeliveryReceipt $RequestDeliveryReceipt
-
-        if ($approvalResult.Result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            # Create the email message using the potentially modified email address
-            $message = New-Object System.Net.Mail.MailMessage
-            $message.From = $fromEmail
-            $message.To.Add($approvalResult.EmailAddress)
-            $message.Subject = $emailSubject
-            $message.Body = $emailBody
-            $message.IsBodyHtml = $true
-
-            # Set read receipt if requested
-            if ($RequestReadReceipt) {
-                $message.Headers.Add("Disposition-Notification-To", $fromEmail)
-            }
-
-            # Set delivery receipt if requested
-            if ($RequestDeliveryReceipt) {
-                $message.DeliveryNotificationOptions = [System.Net.Mail.DeliveryNotificationOptions]::OnSuccess
-            }
-
-            # Set priority if requested
-            if ($HighPriority) {
-                $message.Priority = [System.Net.Mail.MailPriority]::High
-            }
-
-            # Configure SMTP client
-            $smtpClient = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
-            $smtpClient.EnableSsl = $true
-            # Convert SecureString to NetworkCredential
-            $smtpClient.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $SmtpPassword)
-
-
-            # Send the email
-            $smtpClient.Send($message)
-            $sentEmails++
-            Write-Host "Email approved and sent to $($approvalResult.EmailAddress)"
-        }
-        else {
-            $rejectedEmails++
-            Write-Host "Email to $toEmail was rejected by user"
-        }
-
+        # Import the CSV file
+        $users = Import-Csv -Path $CsvFilePath
     } catch {
-        Write-Error "Failed to process email for $toEmail. Error: $_"
-    } finally {
-        if ($null -ne $message) {
-            $message.Dispose()
+        Write-Error "Failed to read the CSV file. Error: $_"
+        exit
+    }
+    
+    # Initialize counters
+    $totalEmails = $users.Count
+    $sentEmails = 0
+    $rejectedEmails = 0
+    
+    # Iterate over each user in the CSV file
+    foreach ($user in $users) {
+        try {
+            # Construct the email address using SAMAccountName and domain parameter
+            $toEmail = "$($user.SamAccountName)@$EmailDomain"
+            
+            # Create replacements hashtable for template processing
+            $replacements = @{}
+            # Add all CSV properties to the replacements
+            $user.PSObject.Properties | ForEach-Object {
+                $replacements[$_.Name] = $_.Value
+            }
+            
+            # Process the template with the replacements
+            $emailBody = Process-EmailTemplate -templateContent $templateContent -replacements $replacements
+    
+            # Show approval form and get result
+            $priority = if ($HighPriority) { "High" } else { "Normal" }
+            $approvalResult = Show-EmailApprovalForm -ToEmail $toEmail -Subject $emailSubject -Body $emailBody `
+                -Priority $priority -HasReadReceipt $RequestReadReceipt -HasDeliveryReceipt $RequestDeliveryReceipt
+    
+            if ($approvalResult.Result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                # Create the email message using the potentially modified email address
+                $message = New-Object System.Net.Mail.MailMessage
+                $message.From = $fromEmail
+                $message.To.Add($approvalResult.EmailAddress)
+                $message.Subject = $emailSubject
+                $message.Body = $emailBody
+                $message.IsBodyHtml = $true
+    
+                # Set read receipt if requested
+                if ($RequestReadReceipt) {
+                    $message.Headers.Add("Disposition-Notification-To", $fromEmail)
+                }
+    
+                # Set delivery receipt if requested
+                if ($RequestDeliveryReceipt) {
+                    $message.DeliveryNotificationOptions = [System.Net.Mail.DeliveryNotificationOptions]::OnSuccess
+                }
+    
+                # Set priority if requested
+                if ($HighPriority) {
+                    $message.Priority = [System.Net.Mail.MailPriority]::High
+                }
+    
+                # Configure SMTP client
+                $smtpClient = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
+                $smtpClient.EnableSsl = $true
+                # Convert SecureString to NetworkCredential
+                $smtpClient.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $SmtpPassword)
+    
+                # Send the email
+                $smtpClient.Send($message)
+                $sentEmails++
+                Write-Host "Email approved and sent to $($approvalResult.EmailAddress)"
+            }
+            else {
+                $rejectedEmails++
+                Write-Host "Email to $toEmail was rejected by user"
+            }
+    
+        } catch {
+            Write-Error "Failed to process email for $toEmail. Error: $_"
+        } finally {
+            if ($null -ne $message) {
+                $message.Dispose()
+            }
         }
     }
-}
-
-# Display summary
-Write-Host "`nEmail Processing Summary:"
-Write-Host "Total emails processed: $totalEmails"
-Write-Host "Emails sent: $sentEmails"
-Write-Host "Emails rejected: $rejectedEmails"
+    
+    # Display summary
+    Write-Host "`nEmail Processing Summary:"
+    Write-Host "Total emails processed: $totalEmails"
+    Write-Host "Emails sent: $sentEmails"
+    Write-Host "Emails rejected: $rejectedEmails"
